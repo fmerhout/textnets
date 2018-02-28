@@ -13,46 +13,87 @@ library(reshape2)
 library(igraph)
 library(ggraph)
 
-cnlp_init_udpipe("english")
+
+get_noun_sentiments <- function(text_data, lang = "english") {
+  # set up udpipe backend with language support
+  cnlp_init_udpipe("english")
+  # annotate texts
+  text_data_annotated <- lapply(text_data, cnlp_annotate)
+  # extract tokens from annotation
+  text_data_token <- lapply(text_data_annotated, cnlp_get_token)
+  # extract dependencies from annotation
+  text_data_dependencies <- lapply(text_data_annotated, cnlp_get_dependency)
+  # combine tokens and depencies 
+  text_token_dependencies <- data_frame(speaker = text_data_token[[1]]$id,
+                                        sid = text_data_token[[1]]$sid,
+                                        word = text_data_token[[1]]$word, 
+                                        pos = text_data_token[[1]]$pos, 
+                                        relation = text_data_dependencies[[1]]$relation)
+  # subset to objects and their modifiers
+  text_token_dependencies_sub <- text_token_dependencies %>% filter(relation%in%c("amod","obj"))
+  # # get sentiment for words with tidytext
+  # text_token_dependencies_sub <- left_join(text_token_dependencies_sub, get_sentiments(lexicon = "afinn"))
+  # get sentiment for words with syuzhet
+  text_token_dependencies_sub$score <- sapply(text_token_dependencies_sub$word, get_sentiment)
+  # remove sentiment associated with objects keep modifiers
+  text_token_dependencies_sub$score[text_token_dependencies_sub$relation=="obj"] <- NA
+  
+  # calculate average sentiment per sentence
+  text_token_dependencies_sub %<>%
+    group_by(speaker,sid) %>%
+    mutate(ave_sent = mean(score, na.rm = TRUE))
+  
+  # return completed data frame
+  return(text_token_dependencies_sub)
+  
+}
+
+
+# cnlp_init_udpipe("english")
 
 
 sotu <- data.frame(cbind(sotu_text, sotu_meta), stringsAsFactors=FALSE)
 sotu$sotu_text <- as.character(sotu$sotu_text)
 
-for_nets<-as.data.frame(NULL)
+# put df for analysis in list for analysis
+sotu_list <- sotu %>% filter(president%in%c("John Adams")) %>% select(president, sotu_text) %>% list()
 
-for(i in 1:nrow(sotu)){
-  results<-cnlp_annotate(sotu$sotu_text[i])
-  texty_token <- cnlp_get_token(results)
-  relations<-cnlp_get_dependency(results)
-  output<-cbind(texty_token,relations$relation)
-  output_new<-data.frame(cbind(texty_token$word, 
-                               texty_token$pos, 
-                               relations$relation,
-                               texty_token$sid))
-  
-  output_new<-output_new[output_new$X3=="amod"|
-                           output_new$X3=="obj",]
-  
-  output_new$X1<-as.character(output_new$X1)
-  output_new$sentiment<-sapply(output_new$X1, get_sentiment)
-  output_new$sentiment[output_new$X3=="obj"]<-NA
-  
-  calcs<-output_new %>%
-    group_by(output_new$X4) %>%
-    summarise(ave_sent=mean(sentiment, na.rm=TRUE))
-  
-  names(calcs)<-c("X4","ave_sent")
-  newstuff<-left_join(output_new, calcs)
-  
-  final<-newstuff[newstuff$X3!="amod",]
-  
-  words<-final[,c("X1", "ave_sent")]
-  
-  words$author<-sotu$president[i]
-  for_nets<-rbind(for_nets, words)
-  print(i)
-}
+sotu_noun_sentiment <- get_noun_sentiments(sotu_list)
+
+# for_nets<-as.data.frame(NULL)
+
+# for(i in 1:nrow(sotu)){
+#  results<-cnlp_annotate(sotu$sotu_text[i])
+#  texty_token <- cnlp_get_token(results)
+#  relations<-cnlp_get_dependency(results)
+#  output<-cbind(texty_token,relations$relation)
+#  output_new<-data.frame(cbind(texty_token$word, 
+#                               texty_token$pos, 
+#                               relations$relation,
+#                               texty_token$sid))
+#  
+#  output_new<-output_new[output_new$X3=="amod"|
+#                           output_new$X3=="obj",]
+#  
+#  output_new$X1<-as.character(output_new$X1)
+#  output_new$sentiment<-sapply(output_new$X1, get_sentiment)
+#  output_new$sentiment[output_new$X3=="obj"]<-NA
+#  
+#  calcs<-output_new %>%
+#    group_by(output_new$X4) %>%
+#    summarise(ave_sent=mean(sentiment, na.rm=TRUE))
+#  
+#  names(calcs)<-c("X4","ave_sent")
+#  newstuff<-left_join(output_new, calcs)
+#  
+#  final<-newstuff[newstuff$X3!="amod",]
+#  
+#  words<-final[,c("X1", "ave_sent")]
+#  
+#  words$author<-sotu$president[i]
+#  for_nets<-rbind(for_nets, words)
+#  print(i)
+# }
 
 #group by president and then word
 
