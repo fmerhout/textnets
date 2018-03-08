@@ -60,16 +60,21 @@ en_pos_abb <- readRDS("~/Work/Projects/textnets/english_pos_abbreviations.RDS")
 ##
 
 
+
+
 # THIS FUNCTION EXTRACTS ALL NOUNS AND THE CORRESPONDING SENTIMENT OF THE SENTENCES CONTAINING THEM
 
 get_noun_sentiments <- function(text_data, lang = "english"){
+  # SETUP
   # ensure first row is numeric document id
   if(!all(text_data[,1]==1:nrow(text_data))){
-    text_data <- bind_cols(data_frame(doc_ids = 1:nrow(text_data)),
+    text_data <- bind_cols(data_frame(id = 1:nrow(text_data)),
                            text_data)
   }
   # set up udpipe backend with language support
   cnlp_init_udpipe(lang)
+  
+  # ANNOTATION, TOKENIZATION, AND DEPENDENCIES
   # annotate texts
   text_data_annotated <- cnlp_annotate(text_data)
   # extract tokens from annotation
@@ -85,6 +90,8 @@ get_noun_sentiments <- function(text_data, lang = "english"){
                                         pos = text_data_token$pos,
                                         upos = text_data_token$upos,
                                         relation = text_data_dependencies$relation)
+  
+  # SENTIMENT ANALYSIS
   # get sentiment for lemmatized words
   text_token_dependencies$sentiment <- get_sentiment(text_token_dependencies$lemma)
   # get average sentence sentiment (among words with sentiment score)
@@ -92,12 +99,33 @@ get_noun_sentiments <- function(text_data, lang = "english"){
     mutate(ave_sent = mean(sentiment[sentiment!=0], na.rm = TRUE))
   # subset to nouns which are our edges
   text_nouns <- text_token_dependencies %>% filter(upos%in%c("NOUN", "PROPN"))
+  
+  # NOUN COMPOUNDS
   # retrieve noun compounds
   noun_compound <- which(text_nouns$relation=="compound")
   text_nouns$word[noun_compound+1] <- paste(text_nouns$word[noun_compound],
                                             text_nouns$word[noun_compound+1])
   # remove compounds
   text_nouns <- text_nouns %>% filter(relation!="compound")
+  
+  # TFIDF WEIGHTS
+  # get tf-idf for all nouns
+  nouns_tfidf <- cnlp_get_tfidf(nouns_from_text[,c("id", "word")], token_var = "word")
+  # force to matrix and transpose tfidf data
+  nouns_tfidf <- t(as.matrix(nouns_tfidf))
+  # add word column and turn into dataframe for reshaping
+  nouns_tfidf <- as_data_frame(cbind(nouns_tfidf, word = rownames(nouns_tfidf)))
+  # reshape wide to long
+  nouns_tfidf <- gather(nouns_tfidf, id, tfidf, -word)
+  # add tfidf to output data
+  nouns_from_text <- left_join(nouns_from_text, nouns_tfidf)
+  
+  # ADD META DATA
+  if(ncol(text_data)>2){
+    nouns_from_text$id <- as.numeric(nouns_from_text$id)
+    nouns_from_text <- full_join(nouns_from_text, text_data[,c(1,3:ncol(text_data))], by = "id")
+  }
+  
   # return nouns
   return(text_nouns)
 }
@@ -106,13 +134,16 @@ get_noun_sentiments <- function(text_data, lang = "english"){
 # THIS FUNCTION EXTRACTS ALL NOUNS AND CORRESPONDING MODIFIERS TO GET THEIR SENTIMENT
 
 get_noun_modifiers <- function(text_data, lang = "english"){
+  # SETUP
   # ensure first row is numeric document id
   if(!all(text_data[,1]==1:nrow(text_data))){
-    text_data <- bind_cols(data_frame(doc_ids = 1:nrow(text_data)),
+    text_data <- bind_cols(data_frame(id = 1:nrow(text_data)),
                             text_data)
   }
   # set up udpipe backend with language support
   cnlp_init_udpipe(lang)
+  
+  # ANNOTATION, TOKENIZATION, AND DEPENDENCIES
   # annotate texts
   text_data_annotated <- cnlp_annotate(text_data)
   # extract tokens from annotation
@@ -134,7 +165,7 @@ get_noun_modifiers <- function(text_data, lang = "english"){
   # get all amods and their nouns and all nouns and their targets
   nouns_from_text <- text_token_dependencies[text_token_dependencies$upos%in%c("NOUN", "PROPN"),]
   
-  
+  # SENTIMENT ANALYSIS
   ## initial idea:
   ## get all amods and their nouns and get all nouns and their targets
   ## then, get sentiment for amods and targets and assign to nouns
@@ -150,17 +181,10 @@ get_noun_modifiers <- function(text_data, lang = "english"){
   # get amods and their referents
   amods_from_text <- text_token_dependencies[text_token_dependencies$relation=="amod", c("id", "sid", "tid_target", "lemma")]
   names(amods_from_text) <- c("id", "sid", "tid", "amod")
-  # add amods to nounds
+  # add amods to nouns
   nouns_from_text <- left_join(nouns_from_text, amods_from_text)
   nouns_from_text$amod_sent <- NA
   nouns_from_text$amod_sent[!is.na(nouns_from_text$amod)] <- get_sentiment(nouns_from_text$amod[!is.na(nouns_from_text$amod)], language = lang)
-  
-  # retrieve noun compounds
-  noun_compound <- which(nouns_from_text$relation=="compound")
-  nouns_from_text$word[noun_compound+1] <- paste(nouns_from_text$word[noun_compound],
-                                                 nouns_from_text$word[noun_compound+1])
-  # remove first element from compounds
-  nouns_from_text <- nouns_from_text %>% filter(relation!="compound")
   
   # calculate combined sentiment
   # need to figure out how to combine sentiments sensibly
@@ -169,9 +193,37 @@ get_noun_modifiers <- function(text_data, lang = "english"){
                                       nouns_from_text$sentiment,
                                       nouns_from_text$sentiment + nouns_from_text$amod_sent)
   
+  # NOUN COMPOUNDS
+  # retrieve noun compounds
+  noun_compound <- which(nouns_from_text$relation=="compound")
+  nouns_from_text$word[noun_compound+1] <- paste(nouns_from_text$word[noun_compound],
+                                                 nouns_from_text$word[noun_compound+1])
+  # remove first element from compounds
+  nouns_from_text <- nouns_from_text %>% filter(relation!="compound")
+  
+  # TFIDF WEIGHTS
+  # get tf-idf for all nouns
+  nouns_tfidf <- cnlp_get_tfidf(nouns_from_text[,c("id", "word")], token_var = "word")
+  # force to matrix and transpose tfidf data
+  nouns_tfidf <- t(as.matrix(nouns_tfidf))
+  # add word column and turn into dataframe for reshaping
+  nouns_tfidf <- as_data_frame(cbind(nouns_tfidf, word = rownames(nouns_tfidf)))
+  # reshape wide to long
+  nouns_tfidf <- gather(nouns_tfidf, id, tfidf, -word)
+  # add tfidf to output data
+  nouns_from_text <- left_join(nouns_from_text, nouns_tfidf)
+  
+  # add meta data
+  if(ncol(text_data)>2){
+    nouns_from_text$id <- as.numeric(nouns_from_text$id)
+    nouns_from_text <- full_join(nouns_from_text, text_data[,c(1,3:ncol(text_data))], by = "id")
+  }
+  
   # return nouns
   return(nouns_from_text)
   }
+
+
 
 
 
